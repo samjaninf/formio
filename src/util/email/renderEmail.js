@@ -1,7 +1,7 @@
 /* eslint-disable max-statements */
 'use strict';
 
-const {processSync} = require('@formio/core');
+const {processSync, Evaluator} = require('@formio/core');
 const {JSDOM} = require('jsdom');
 const _ = require('lodash');
 const {
@@ -17,6 +17,8 @@ const {
   insertTable,
   isGridBasedComponent,
   isLayoutComponent,
+  convertToString,
+  cleanLabelTemplate
 } = require('./utils');
 const macros = require('./nunjucks-macros');
 
@@ -29,7 +31,7 @@ function renderEmailProcessorSync(context) {
     return;
   }
 
-  const conditionallyHidden = scopeRef.conditionals.find(
+  const conditionallyHidden = scopeRef.conditionals?.find(
     (cond) => cond.path === paths?.dataPath && cond.conditionallyHidden,
   );
   const intentionallyHidden = component.hidden;
@@ -57,7 +59,9 @@ function renderEmailProcessorSync(context) {
 
   const language = context?.metadata?.language;
 
-  const rowValue = _.get(data, paths?.dataPath ?? component.key);
+  const isRadioCheckbox = component.type === 'checkbox' && component.inputType === 'radio';
+  const value = _.get(data, paths?.dataPath ?? component.key);
+  const rowValue = isRadioCheckbox ? value === component.value : value;
 
   // some components (like nested forms) add .data to the path
   // this makes it hard to map onto the parent while iterating through nested children
@@ -123,8 +127,6 @@ function renderEmailProcessorSync(context) {
     case 'textfield':
     case 'number':
     case 'password':
-    case 'select':
-    case 'radio':
     case 'email':
     case 'url':
     case 'phoneNumber':
@@ -132,6 +134,53 @@ function renderEmailProcessorSync(context) {
     case 'tags':
     case 'reviewpage': {
       const outputValue = component.multiple ? rowValue?.join(', ') : rowValue;
+      insertRow(componentRenderContext, outputValue);
+      return;
+    }
+    case 'radio': {
+      let outputValue = '';
+    if (rowValue) {
+      if (component.dataSrc === 'url') {
+        // eslint-disable-next-line max-depth
+        if (component.template && _.get(context.metadata, `selectData.${paths?.dataPath}`)) {
+          const selectData = _.get(context.metadata, `selectData.${paths?.dataPath}`);
+          const template = cleanLabelTemplate(component.template);
+          outputValue = Evaluator.interpolate(template, {item: selectData});
+        }
+      }
+      else {
+        outputValue = component?.values?.filter(v => rowValue === v.value)
+          .map(v => v.label)
+          .join(', ') || '';
+      }
+    }
+      else {
+        outputValue = rowValue;
+      }
+
+      insertRow(componentRenderContext, outputValue);
+      return;
+    }
+    case 'select': {
+      let outputValue;
+      if (rowValue  && _.get(context.metadata, `selectData.${paths?.dataPath}`)) {
+        const selectData = _.get(context.metadata, `selectData.${paths?.dataPath}`);
+        const getValueLabel = (v, labelData, template) => {
+           return labelData
+            ? Evaluator.interpolate(template, {item: labelData})
+            : convertToString(v);
+         };
+        const template = cleanLabelTemplate(component.template) || '{{ item.label }}';
+        outputValue = component.multiple
+          ? rowValue?.map(v => getValueLabel(v, _.get(selectData, v), template)).join(', ')
+          : getValueLabel(rowValue, selectData, template);
+      }
+      else {
+        outputValue = component.multiple
+          ? rowValue?.map(v => convertToString(v)).join(', ')
+          : convertToString(rowValue);
+      }
+
       insertRow(componentRenderContext, outputValue);
       return;
     }
@@ -149,12 +198,28 @@ function renderEmailProcessorSync(context) {
       return;
     }
     case 'selectboxes': {
-      const outputValue = rowValue
-        ? component?.values
-            ?.filter((v) => rowValue[v.value])
-            .map((v) => v.label)
-            .join(', ')
-        : '';
+      let outputValue = '';
+      if (rowValue) {
+        if (component.dataSrc === 'url') {
+          // eslint-disable-next-line max-depth
+          if (component.template && _.isArray(_.get(context.metadata, `selectData.${paths?.dataPath}`))) {
+            const selectData = _.get(context.metadata, `selectData.${paths?.dataPath}`);
+            const template = cleanLabelTemplate(component.template);
+            outputValue = selectData.map(labelData => Evaluator.interpolate(template, {item: labelData})).join(', ');
+          }
+          else {
+            outputValue = _(rowValue)
+              .pickBy(Boolean)
+              .keys()
+              .join(', ');
+          }
+        }
+        else {
+          outputValue = component?.values?.filter(v => rowValue[v.value])
+            .map(v => v.label)
+            .join(', ') || '';
+        }
+      }
       insertRow(componentRenderContext, outputValue);
       return;
     }
@@ -331,7 +396,7 @@ function getRenderMethod(render) {
   if (process.env.RENDER_METHOD) {
     renderMethod = process.env.RENDER_METHOD;
   }
- else if (render && render.renderingMethod) {
+  else if (render && render.renderingMethod) {
     renderMethod = render.renderingMethod;
   }
   return renderMethod;
