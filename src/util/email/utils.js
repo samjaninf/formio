@@ -178,14 +178,14 @@ return '';
         : locationTimezone && displayInTimezone === 'location'
           ? locationTimezone
           : // of viewer (i.e. wherever this server is)
-            currentTimezone();
+            userProvidedTimezone || currentTimezone();
   return momentDate(value, format, timezone).format(format);
 };
 
 const formatTime = (component, value) => {
   if (!value) {
-return '';
-}
+    return '';
+  }
   const format = component.format ?? 'HH:mm';
   const dataFormat = component.dataFormat ?? 'HH:mm:ss';
   return moment(value, dataFormat).format(format);
@@ -423,6 +423,80 @@ const insertDataMapTable = (
   insertTable(componentRenderContext, rows);
 };
 
+const convertToString = (value) => {
+  if (_.isObject(value)) {
+    try {
+      return JSON.stringify(value);
+    }
+    catch (e) {
+      return value;
+    }
+  }
+  else {
+    return value;
+  }
+};
+
+const cleanLabelTemplate = (template) => {
+  return (template || '').replace(/<\/?[^>]+(>|$)/g, '');
+};
+
+const formioComponents = [
+  'address',
+  'base',
+  'component',
+  'componentmodal',
+  'button',
+  'checkbox',
+  'columns',
+  'container',
+  'content',
+  'currency',
+  'datagrid',
+  'datamap',
+  'datetime',
+  'day',
+  'editgrid',
+  'email',
+  'input',
+  'field',
+  'multivalue',
+  'list',
+  'fieldset',
+  'file',
+  'form',
+  'hidden',
+  'htmlelement',
+  'nested',
+  'nesteddata',
+  'nestedarray',
+  'number',
+  'panel',
+  'password',
+  'phoneNumber',
+  'radio',
+  'recaptcha',
+  'select',
+  'selectboxes',
+  'signature',
+  'survey',
+  'table',
+  'tabs',
+  'tags',
+  'textarea',
+  'textfield',
+  'time',
+  'url',
+  'well',
+  'datasource',
+  'sketchpad',
+  'tagpad',
+  'datatable',
+  'reviewpage',
+  'captcha',
+  'resourcefields',
+];
+
 module.exports = {
   isLayoutComponent,
   isGridBasedComponent,
@@ -446,4 +520,7 @@ module.exports = {
   getProviderDisplayValue,
   insertGridHeader,
   insertGridRow,
+  convertToString,
+  cleanLabelTemplate,
+  formioComponents
 };
