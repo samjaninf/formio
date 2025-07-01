@@ -2,251 +2,13 @@
 const _ = require('lodash');
 const {ObjectId} = require('mongodb');
 const FormioCore = require('@formio/core');
-const Utils = require('../util/util');
 const fetch = require('@formio/node-fetch-http-proxy');
 const debug = {
   validator: require('debug')('formio:validator'),
   error: require('debug')('formio:error')
 };
-
-class InstanceShim {
-  constructor(
-    component,
-    root,
-    data,
-    path = component.path || component.key,
-    dataIndex = null,
-    scope
-  ) {
-    this._component = component;
-    this._root = root;
-    this._data = data;
-    this._path = path;
-    this._rowIndex = dataIndex;
-    this._conditionals = scope.conditionals || [];
-  }
-
-  get root() {
-    return this._root;
-  }
-
-  get rowIndex() {
-    return this._rowIndex;
-  }
-
-  get component() {
-    return this._component;
-  }
-
-  // No op
-  get schema() {
-    return {};
-  }
-
-  // No op
-  get options() {
-    return {};
-  }
-
-  get currentForm() {
-    return this.root.form;
-  }
-
-  // Returns row
-  get data() {
-    return FormioCore.Utils.getContextualRowData(
-      this.component,
-      this.component.path,
-      this._data
-    );
-  }
-
-  // No op
-  set data(data) {}
-
-  // Returns parent instance
-  get parent() {
-    return this.root.getComponent(
-      this.component.path.replace(/(\.[^.]+)$/, "")
-    );
-  }
-
-  // Returns component value
-  get dataValue() {
-    return _.get(this._data, this._path);
-  }
-
-  get visible() {
-    return !_.some(
-      this._conditionals || [],
-      (condComp) =>
-        condComp.conditionallyHidden &&
-        (condComp.path === this._path ||
-          _.startsWith(condComp.path, this._path))
-    );
-  }
-
-  // Question: Should we allow this?
-  // Sets component value
-  set dataValue(value) {
-    _.set(this._data, this._path, value);
-  }
-
-  // return component value
-  getValue() {
-    return this.dataValue;
-  }
-
-  // set component value
-  setValue(value) {
-    this.dataValue = value;
-  }
-
-  shouldSkipValidation() {
-    return false;
-  }
-
-  isEmpty() {
-    return FormioCore.Utils.isComponentDataEmpty(
-      this.component,
-      this._data,
-      this._path
-    );
-  }
-
-  getCustomDefaultValue() {
-    if (this.component.customDefaultValue) {
-      const evaluationContext = {
-        form: this.root.form,
-        component: this.component,
-        submission: this.root.submission,
-        data: this.root.data,
-        config: {
-          server: true,
-        },
-        options: {
-          server: true,
-        },
-        value: null,
-        util: FormioCore.Utils,
-        utils: FormioCore.Utils,
-      };
-      const defaultValue = FormioCore.Evaluator.evaluate(
-        this.component.customDefaultValue,
-        evaluationContext,
-        "value"
-      );
-      return defaultValue;
-    }
-  }
-
-  // Do nothing functions.
-  on() {}
-  off() {}
-  render() {
-    return "";
-  }
-  redraw() {}
-  ready() {
-    return Promise.resolve();
-  }
-  init() {}
-  destroy() {}
-  teardown() {}
-  attach() {}
-  detach() {}
-  build() {}
-  t(text) {
-    return text;
-  }
-  sanitize(dirty) {
-    return dirty;
-  }
-  renderString(template) {
-    return template;
-  }
-}
-
-class RootShim {
-  constructor(form, submission, scope) {
-    this.instanceMap = {};
-    this._form = form;
-    this._submission = submission;
-    this.data = submission.data;
-    this.components = [];
-    this._scope = scope || {};
-    FormioCore.Utils.eachComponentData(
-      form.components,
-      submission.data,
-      (component, data, row, compPath, components, index, parent, paths) => {
-        if (!paths) {
-          paths = FormioCore.Utils.getComponentPaths(component);
-        }
-        const {path, fullPath, fullLocalPath, dataPath, localDataPath} =
-          paths;
-        const instance = new InstanceShim(
-          component,
-          this,
-          submission.data,
-          dataPath ?? path ?? component.key,
-          index,
-          this._scope
-        );
-        this.components.push(instance);
-        if (path && !this.instanceMap[path]) {
-          this.instanceMap[path] = instance;
-        }
-        if (fullPath && !this.instanceMap[fullPath]) {
-          this.instanceMap[fullPath] = instance;
-        }
-        if (fullLocalPath && !this.instanceMap[fullLocalPath]) {
-          this.instanceMap[fullLocalPath] = instance;
-        }
-        if (dataPath && !this.instanceMap[dataPath]) {
-          this.instanceMap[dataPath] = instance;
-        }
-        if (localDataPath && !this.instanceMap[localDataPath]) {
-          this.instanceMap[localDataPath] = instance;
-        }
-      },
-      true
-    );
-  }
-
-  getComponent(pathArg) {
-    const path = FormioCore.Utils.getStringFromComponentPath(pathArg);
-    // If we don't have an exact path match, compare the final pathname segment with the path argument for each component
-    // i.e. getComponent('foo') should return a component at the path 'bar.foo' if it exists
-    if (!this.instanceMap[path]) {
-      for (const key in this.instanceMap) {
-        const match = key.match(new RegExp(`\\.${path}$`));
-        const lastPathSegment = match ? match[0].slice(1) : "";
-        if (lastPathSegment === path) {
-          // set a cache for future `getComponent` calls in this lifecycle
-          this.instanceMap[path] = this.instanceMap[key];
-          break;
-        }
-      }
-    }
-    return this.instanceMap[path];
-  }
-
-  get submission() {
-    return this._submission;
-  }
-
-  set submission(data) {}
-
-  get form() {
-    return this._form;
-  }
-
-  set form(form) {}
-
-  get root() {
-    return null;
-  }
-}
+const Utils = require('../util/util');
+const {RootShim} = require('../vm');
 
 async function loadFormById(cache, req, formId) {
   const resource = await cache.loadForm(req, null, formId);
@@ -297,6 +59,7 @@ class Validator {
     this.tokens = tokens;
     this.hook = formio.hook;
     this.config = formio.config;
+    this.formioUtil = formio.util;
   }
 
   addPathQueryParams(pathQueryParams, query, path) {
@@ -321,11 +84,13 @@ class Validator {
   }
 
   async isUnique(context, submission, value) {
+    value = _.cloneDeep(value);
     const {component} = context;
     const path = `data.${context.path}`;
-    // Build the query
+    // Build the querys
     const query = {form: this.form._id};
     let collationOptions = {};
+    this.formioUtil.transformIdsToObjectIds(value);
 
     if (_.isString(value)) {
       if (component.dbIndex) {
@@ -552,14 +317,21 @@ class Validator {
       ...(this.form ? this.form.config ?? {} : {}),
     };
 
+    const scope = {};
+    const serializedSubmission = JSON.parse(JSON.stringify(submission));
+    const root = new RootShim(this.form, serializedSubmission, scope);
     const context = {
       form: this.form,
-      submission: submission,
+      submission: serializedSubmission,
       components: this.form.components,
-      data: submission.data,
+      data: serializedSubmission.data,
       processors: [],
       fetch,
-      scope: {},
+      scope,
+      instances: root.instanceMap,
+      options: {
+        server: true
+      },
       config: {
         ...projectAndFormConfig,
         headers: JSON.parse(JSON.stringify(this.req.headers)),
@@ -577,36 +349,12 @@ class Validator {
     };
     try {
       // Process the server processes
-      context.processors = FormioCore.ProcessTargets.submission;
+      context.processors = FormioCore.Processors;
       context.rules = this.hook.alter('serverRules', FormioCore.serverRules);
-      await FormioCore.process(context);
+      context.rules = FormioCore.rules.concat(context.rules);
+      context.scope = await FormioCore.process(context);
       submission.data = context.data;
-
-      const serializedSubmission = JSON.parse(JSON.stringify(submission));
-      const root = new RootShim(context.form, serializedSubmission, context.scope);
-      const submissionContext = {
-        form: this.form,
-        components: this.form.components,
-        submission: serializedSubmission,
-        data: serializedSubmission.data,
-        scope: context.scope || {},
-        config: {
-            server: true,
-            token: context.token || '',
-        },
-        options: {
-            server: true,
-        },
-        instances: root.instanceMap,
-        processors: FormioCore.ProcessTargets.evaluator,
-      };
-
-      const scope = FormioCore.processSync(submissionContext);
-      const data = submissionContext.data;
-
-      context.scope = scope;
-      submission.data = data;
-      submission.scope = scope;
+      submission.scope = context.scope;
 
       // Now that the validation is complete, we need to remove fetched data from the submission.
       for (const path in context.scope.fetched) {

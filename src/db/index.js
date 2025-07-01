@@ -304,6 +304,29 @@ module.exports = function(formio) {
         formio.util.log('Compound indexes that contain nested paths are not supported.');
         config.mongoFeatures.compoundIndexWithNestedPath = formio.mongoFeatures.compoundIndexWithNestedPath = false;
       }
+
+      // check CosmosDB indexes
+      try {
+        // Checking whether indexes need to be created for CosmosDB to function
+        await featuresTest.dropIndexes();
+        await featuresTest.insertOne({title: 'Test Title', nested: {test: 'value'}});
+        await featuresTest.find().sort({title: 1}).limit(1).toArray();
+      }
+      catch (err) {
+        // Create indexes if they don't exist
+        const collections = await db.listCollections().toArray();
+
+        for (const {name} of collections) {
+          const collection = db.collection(name);
+          const indexes = await collection.indexes();
+
+          const hasWildcard = indexes.some(idx => idx.key && idx.key["$**"] === 1);
+
+          if (!hasWildcard) {
+            await collection.createIndex({"$**": 1});
+          }
+        }
+      }
       await featuresTest.drop();
     }
     catch (err) {
@@ -580,10 +603,13 @@ module.exports = function(formio) {
       return;
     }
 
+    // Store original version to prevent intermediate vesion updates
+    const originalVersion = currentLock.version;
+
     // Determine the pending updates, by filtering the searchable updates.
     const pending = _.filter(updates, function(potential) {
       // An update is only applicable if it has not been applied to the db yet, and it is lower than the current.
-      const applicable = semver.gt(potential, currentLock.version) && semver.lte(potential, config.schema);
+      const applicable = semver.gt(potential, originalVersion) && semver.lte(potential, config.schema);
 
       // Display progress.
       if (applicable) {
@@ -596,8 +622,8 @@ module.exports = function(formio) {
     // Only take action if outstanding updates exist.
     debug.db('Pending updates');
     if (pending.length > 0) {
-      async.eachSeries(pending, function(pending, callback) {
-        formio.util.log(` > Starting schema update to ${pending}`);
+      async.eachSeries(pending, function(pendingVersion, callback) {
+        formio.util.log(` > Starting schema update to ${pendingVersion}`);
 
         // Load the update then update the schema lock version.
         let _update = null;
@@ -605,7 +631,7 @@ module.exports = function(formio) {
         // Attempt to load the the pending update.
         // Allow anyone to hook the pending updates location.
         try {
-          _update = formio.hook.alter('updateLocation', pending);
+          _update = formio.hook.alter('updateLocation', pendingVersion);
         }
         catch (e) {
           debug.error(e);
@@ -617,18 +643,20 @@ module.exports = function(formio) {
         debug.db(_update);
         if (typeof _update !== 'function') {
           try {
-            _update = require(path.join(__dirname, `/updates/${pending}`));
+            _update = require(path.join(__dirname, `/updates/${pendingVersion}`));
           }
           catch (e) {
             debug.error(e);
             debug.db(e);
+            formio.util.log(` > Error: Could not load update file: ${pendingVersion}`);
+            return callback(`Could not load update: ${pendingVersion}`);
           }
         }
 
         // Attempt to resolve the update.
         try {
           if (typeof _update !== 'function') {
-            return callback(`Could not resolve the path for update: ${pending}`);
+            return callback(`Could not resolve the path for update: ${pendingVersion}`);
           }
 
           debug.db('Update Params:');
@@ -637,10 +665,13 @@ module.exports = function(formio) {
           debug.db(tools);
           _update(db, config, tools, function(err) {
             if (err) {
+              formio.util.log(` > ERROR in update ${pendingVersion}: ${err}`);
               return callback(err);
             }
 
-            tools.updateLockVersion(pending, callback);
+            // Update pendingVersion done() called, proceeding to next update, if exist
+            // don't update lock version here - just proceed to next update
+            callback();
           });
         }
         catch (e) {
@@ -653,7 +684,16 @@ module.exports = function(formio) {
           throw err;
         }
 
-        formio.util.log(' > Done applying pending updates\n');
+        // Update lock version to the FINAL version only after ALL updates are started
+        const finalVersion = pending[pending.length - 1];
+        tools.updateLockVersion(finalVersion, function(lockErr) {
+          if (lockErr) {
+            formio.util.log(` > ERROR updating final lock version: ${lockErr}`);
+            throw lockErr;
+          }
+
+          formio.util.log(' > Done applying pending updates (background work may continue)\n');
+        });
       });
     }
     else {

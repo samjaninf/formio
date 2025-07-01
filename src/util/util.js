@@ -499,6 +499,37 @@ const Utils = {
     return _.padEnd(str.substr(0, 24), 24, '0');
   },
 
+    /**
+   * Ensures that data has MongoDB ObjectID's for all "_id" fields.
+   * @param data
+   * @return {boolean}
+   */
+  transformIdsToObjectIds(data) {
+    if (!data || !_.isObject(data)) {
+      return;
+    }
+    _.each(data, (value, key) => {
+      if (!value) {
+        return;
+      }
+      if (_.isArray(value)) {
+        value.forEach((arrayEl) => Utils.convertIdsToObjectIds(arrayEl));
+      }
+      else if (_.isObject(value)) {
+        Utils.ensureIds(value);
+      }
+      else if ((key === '_id') &&
+        (typeof value === 'string') &&
+        ObjectID.isValid(value)
+      ) {
+        const bsonId = Utils.idToBson(value);
+        if (bsonId) {
+          data[key] = bsonId;
+        }
+      }
+    });
+  },
+
   /**
    * Ensures that a submission data has MongoDB ObjectID's for all "id" fields.
    * @param data
@@ -676,7 +707,7 @@ const Utils = {
    */
   async uniqueMachineName(document, model, next) {
     var query = {
-      machineName: {$regex: `^${document.machineName}[0-9]*$`},
+      machineName: {$regex: `^${_.escapeRegExp(document.machineName)}[0-9]*$`},
       deleted: {$eq: null}
     };
     if (document._id) {
@@ -899,6 +930,12 @@ const Utils = {
           case 'select': {
             if (Number(value) || value === "0") {
               return Number(value);
+            }
+            return value;
+          }
+          case 'selectboxes': {
+            if (['true', 'false'].includes(value)) {
+              return value !== 'false';
             }
           }
         }
